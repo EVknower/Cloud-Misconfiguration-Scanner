@@ -1,10 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
 import uvicorn
 import json
+import os
 from datetime import datetime
+from reportlab.lib.pagesizes import letter, A4
+from reportlab.lib import colors
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.enums import TA_CENTER, TA_LEFT
 
 app = FastAPI(title="Cloud Security Scanner API", version="1.0.0")
 
@@ -85,9 +93,9 @@ async def get_scan(scan_id: str):
         raise HTTPException(status_code=404, detail="Scan not found")
     return scans_db[scan_id]
 
-@app.post("/scans/{scan_id}/report", response_model=ComplianceReport)
+@app.post("/scans/{scan_id}/report")
 async def generate_report(scan_id: str):
-    """Generate compliance report for a scan"""
+    """Generate compliance report for a scan and save as PDF"""
     if scan_id not in scans_db:
         raise HTTPException(status_code=404, detail="Scan not found")
     
@@ -98,20 +106,160 @@ async def generate_report(scan_id: str):
     failed_checks = len(scan['findings'])
     compliance_score = max(0, ((total_checks - failed_checks) / total_checks) * 100)
     
-    report = ComplianceReport(
-        scan_id=scan_id,
-        cis_compliance=round(compliance_score, 2),
-        misconfigurations=scan['findings'],
-        recommendations=[
+    report_data = {
+        'scan_id': scan_id,
+        'cis_compliance': round(compliance_score, 2),
+        'misconfigurations': scan['findings'],
+        'recommendations': [
             "Enable S3 bucket versioning",
             "Restrict security group ingress rules",
             "Enable CloudTrail logging",
             "Use IAM roles instead of access keys"
         ]
+    }
+    
+    # Generate PDF
+    pdf_filename = f"compliance_report_{scan_id}.pdf"
+    pdf_path = os.path.join("backend", "reports", pdf_filename)
+    
+    # Ensure reports directory exists
+    os.makedirs(os.path.join("backend", "reports"), exist_ok=True)
+    
+    generate_pdf_report(pdf_path, scan, report_data)
+    
+    reports_db[scan_id] = report_data
+    
+    return {
+        "scan_id": scan_id,
+        "cis_compliance": report_data['cis_compliance'],
+        "pdf_file": pdf_filename,
+        "pdf_path": pdf_path,
+        "message": f"Report generated successfully at {pdf_path}"
+    }
+
+@app.get("/reports/{filename}")
+async def download_report(filename: str):
+    """Download a generated PDF report"""
+    pdf_path = os.path.join("backend", "reports", filename)
+    
+    if not os.path.exists(pdf_path):
+        raise HTTPException(status_code=404, detail="Report not found")
+    
+    return FileResponse(
+        path=pdf_path,
+        media_type='application/pdf',
+        filename=filename
+    )
+
+def generate_pdf_report(pdf_path: str, scan: dict, report_data: dict):
+    """Generate a PDF compliance report"""
+    doc = SimpleDocTemplate(pdf_path, pagesize=letter)
+    story = []
+    styles = getSampleStyleSheet()
+    
+    # Custom styles
+    title_style = ParagraphStyle(
+        'CustomTitle',
+        parent=styles['Heading1'],
+        fontSize=24,
+        textColor=colors.HexColor('#1976d2'),
+        alignment=TA_CENTER,
+        spaceAfter=30
     )
     
-    reports_db[scan_id] = report.dict()
-    return report
+    heading_style = ParagraphStyle(
+        'CustomHeading',
+        parent=styles['Heading2'],
+        fontSize=16,
+        textColor=colors.HexColor('#1976d2'),
+        spaceAfter=12
+    )
+    
+    # Title
+    story.append(Paragraph("Cloud Security Compliance Report", title_style))
+    story.append(Spacer(1, 0.3*inch))
+    
+    # Report Info
+    info_data = [
+        ['Scan ID:', scan['id']],
+        ['Provider:', scan['provider'].upper()],
+        ['Timestamp:', scan['timestamp']],
+        ['CIS Compliance Score:', f"{report_data['cis_compliance']}%"],
+        ['Total Findings:', str(len(scan['findings']))],
+        ['Critical:', str(scan['critical_count'])],
+        ['High:', str(scan['high_count'])],
+        ['Medium:', str(scan['medium_count'])]
+    ]
+    
+    info_table = Table(info_data, colWidths=[2*inch, 4*inch])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (0, -1), colors.HexColor('#f5f5f5')),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
+        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+    ]))
+    
+    story.append(info_table)
+    story.append(Spacer(1, 0.5*inch))
+    
+    # Findings Section
+    story.append(Paragraph("Security Findings", heading_style))
+    story.append(Spacer(1, 0.2*inch))
+    
+    for idx, finding in enumerate(scan['findings'], 1):
+        # Severity color
+        severity_color = colors.red if finding['severity'] == 'critical' else \
+                        colors.orange if finding['severity'] == 'high' else \
+                        colors.yellow
+        
+        finding_data = [
+            [f"Finding #{idx}", ''],
+            ['Rule ID:', finding['rule_id']],
+            ['Rule Name:', finding['rule_name']],
+            ['Severity:', finding['severity'].upper()],
+            ['Resource Type:', finding['resource_type']],
+            ['Resource ID:', finding['resource_id']],
+            ['Description:', finding['description']],
+            ['Remediation:', finding['remediation']]
+        ]
+        
+        finding_table = Table(finding_data, colWidths=[2*inch, 4*inch])
+        finding_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), severity_color),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('BACKGROUND', (0, 1), (0, -1), colors.HexColor('#f5f5f5')),
+            ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+            ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
+            ('FONTSIZE', (0, 0), (-1, -1), 9),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+            ('GRID', (0, 0), (-1, -1), 1, colors.grey)
+        ]))
+        
+        story.append(finding_table)
+        story.append(Spacer(1, 0.3*inch))
+    
+    # Recommendations Section
+    story.append(Paragraph("Recommendations", heading_style))
+    story.append(Spacer(1, 0.2*inch))
+    
+    for idx, rec in enumerate(report_data['recommendations'], 1):
+        story.append(Paragraph(f"{idx}. {rec}", styles['Normal']))
+        story.append(Spacer(1, 0.1*inch))
+    
+    # Footer
+    story.append(Spacer(1, 0.5*inch))
+    footer_text = f"Generated on {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | Cloud Security Scanner v1.0"
+    story.append(Paragraph(footer_text, ParagraphStyle('Footer', parent=styles['Normal'], fontSize=8, textColor=colors.grey, alignment=TA_CENTER)))
+    
+    # Build PDF
+    doc.build(story)
 
 @app.get("/dashboard/stats")
 async def get_dashboard_stats():

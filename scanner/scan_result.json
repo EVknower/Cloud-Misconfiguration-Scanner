@@ -1,0 +1,33 @@
+{
+  "id": "scan_1767027236",
+  "provider": "aws",
+  "timestamp": "2025-12-29T22:23:56.9817096+05:30",
+  "findings": [
+    {
+      "id": "aws-s3-001",
+      "resource_type": "S3 Bucket",
+      "resource_id": "production-data-bucket",
+      "rule_id": "CIS-AWS-1.2",
+      "rule_name": "S3 Bucket Public Access",
+      "description": "S3 bucket allows public read access",
+      "severity": "critical",
+      "status": "open",
+      "remediation": "Apply bucket policy to restrict public access"
+    },
+    {
+      "id": "aws-sg-001",
+      "resource_type": "Security Group",
+      "resource_id": "sg-12345678",
+      "rule_id": "CIS-AWS-4.1",
+      "rule_name": "Overly Permissive Security Group",
+      "description": "Security group allows SSH from 0.0.0.0/0",
+      "severity": "high",
+      "status": "open",
+      "remediation": "Restrict SSH access to specific IP ranges"
+    }
+  ],
+  "status": "completed",
+  "critical_count": 1,
+  "high_count": 1,
+  "medium_count": 0
+}

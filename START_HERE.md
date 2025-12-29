@@ -25,7 +25,7 @@ You can now view cloud-security-dashboard in the browser.
 If not running, use:
 ```bash
 cd "D:\REPOS\Cloud Misconfiguration Scanner\frontend"
-start-frontend.bat
+.\start-frontend.bat
 ```
 
 ### Option 2: Start Backend
